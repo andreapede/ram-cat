@@ -57,7 +57,7 @@ The **sparkline** shows the last 30 seconds of pressure history (10 × 3s polls)
 ## Install
 
 ```bash
-git clone https://github.com/robertlangdonn/ram-cat.git
+git clone https://github.com/andreapede/ram-cat.git
 cd ram-cat
 python3 -m venv .venv
 source .venv/bin/activate
@@ -136,6 +136,12 @@ RAM Cat scans processes for `mlx_lm.generate`, `mlx_lm.chat`, `mlx_lm.server`, `
 - [ ] Homebrew formula
 - [ ] Alert when wired memory exceeds a threshold (model load complete signal)
 - [ ] Ollama model name resolution
+
+---
+
+## Credits
+
+Originally created by [robertlangdonn](https://github.com/robertlangdonn/ram-cat). This is a fork with a terminal front-end and rendering optimizations — all credit for the original idea and design goes to the author.
 
 ---
 
