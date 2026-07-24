@@ -16,6 +16,9 @@ Run:  python3 app.py
 """
 
 import re
+import sys
+import time
+import argparse
 import subprocess
 import collections
 import rumps
@@ -169,6 +172,104 @@ def _label(text):
     return rumps.MenuItem(text, callback=_noop)
 
 
+def _set_title(item, text):
+    """Assign a menu item's title only if it changed — skips redundant redraws."""
+    if item.title != text:
+        item.title = text
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
+
+_ANSI = {
+    "green": "92", "cyan": "96", "yellow": "93",
+    "magenta": "95", "red": "91", "dim": "2", "bold": "1",
+}
+
+
+def _color(text, *names, enabled=True):
+    if not enabled or not names:
+        return text
+    codes = ";".join(_ANSI[n] for n in names)
+    return f"\033[{codes}m{text}\033[0m"
+
+
+def _mood_color(free_pct):
+    """ANSI color name matching the mood thresholds in MOODS."""
+    if free_pct >= 70:
+        return "green"
+    if free_pct >= 50:
+        return "cyan"
+    if free_pct >= 30:
+        return "yellow"
+    if free_pct >= 15:
+        return "magenta"
+    return "red"
+
+
+def _cli_frame(history, color=False, oneline=False):
+    """Build the same status the menubar shows, as terminal text."""
+    free_pct   = _mac_free_pct()
+    history.append(free_pct)
+    mp_free_gb = _mp_free_gb(free_pct)
+    emoji, label = _mood(free_pct)
+    mc = _mood_color(free_pct)
+
+    if oneline:
+        line = f"RAM {emoji} {mp_free_gb:.1f}G · {free_pct}% free"
+        return _color(line, mc, "bold", enabled=color)
+
+    used_gb = TOTAL_GB - mp_free_gb
+    wired = _wired_gb()
+    swap  = psutil.swap_memory()
+    proc_label, model_name = _running_model()
+
+    fits = _fits_row(mp_free_gb)
+    if color:
+        fits = fits.replace("✓", _color("✓", "green")).replace("✗", _color("✗", "red", "dim"))
+
+    running = (
+        f"Running: {model_name}  [{proc_label}]" if model_name
+        else f"Running: {proc_label}" if proc_label
+        else "Idle"
+    )
+    header = _color(
+        f"RAM {emoji} {mp_free_gb:.1f}G · {free_pct}% free", mc, "bold", enabled=color
+    )
+    return "\n".join([
+        f"{header}   ({label})",
+        "",
+        f"Trend:   {_sparkline(history)}",
+        f"Free:    {free_pct}%  ({mp_free_gb:.1f} / {TOTAL_GB:.0f} GB)",
+        f"In use:  {used_gb:.1f} / {TOTAL_GB:.0f} GB",
+        f"Wired:   {wired:.1f} GB  (model weights)" if wired else "Wired:   —",
+        f"Swap:    {swap.used / (1024**3):.1f} GB used" if swap.used > 0 else "Swap:    none",
+        f"4-bit:   {fits}   ({mp_free_gb:.1f} GB free)",
+        running,
+    ])
+
+
+def run_cli(once=False, interval=3.0, oneline=False, color=None):
+    """Terminal front-end — for when the menubar title is hidden by the notch."""
+    if color is None:
+        color = sys.stdout.isatty()
+    history = collections.deque(maxlen=10)
+    if once:
+        print(_cli_frame(history, color=color, oneline=oneline))
+        return
+    try:
+        while True:
+            frame = _cli_frame(history, color=color, oneline=oneline)
+            if oneline:
+                sys.stdout.write("\r\033[2K" + frame)
+            else:
+                sys.stdout.write("\033[2J\033[H" + frame + "\n\n(Ctrl-C to quit)\n")
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        if oneline:
+            sys.stdout.write("\n")
+
+
 # ─── App ─────────────────────────────────────────────────────────────────────
 
 class RamCatApp(rumps.App):
@@ -189,7 +290,8 @@ class RamCatApp(rumps.App):
         self._cur_free_gb = mp_free_gb
         self._cur_loading = False
 
-        self.title = f"RAM {emoji} {mp_free_gb:.1f}G · {free_pct}% free"
+        self._last_title  = f"RAM {emoji} {mp_free_gb:.1f}G · {free_pct}% free"
+        self.title = self._last_title
 
         wired = _wired_gb()
         self._spark_item = _label(f"Trend:   {_sparkline(self._history)}")
@@ -240,48 +342,92 @@ class RamCatApp(rumps.App):
         swap = psutil.swap_memory()
         wired = _wired_gb()
 
-        self._spark_item.title = f"Trend:   {_sparkline(self._history)}"
-        self._free_item.title  = f"Free:    {free_pct}%  ({mp_free_gb:.1f} / {TOTAL_GB:.0f} GB)"
-        self._used_item.title  = f"In use:  {used_gb:.1f} / {TOTAL_GB:.0f} GB"
-        self._wired_item.title = (
-            f"Wired:   {wired:.1f} GB  (model weights)" if wired else "Wired:   —"
-        )
-        self._swap_item.title  = (
-            f"Swap:    {swap.used / (1024**3):.1f} GB used"
-            if swap.used > 0 else "Swap:    none"
-        )
-        self._fits_item.title  = (
-            f"4-bit:   {_fits_row(mp_free_gb)}   ({mp_free_gb:.1f} GB free)"
-        )
-
         proc_label, model_name = _running_model()
-        self._model_item.title = (
+        running = (
             f"Running: {model_name}  [{proc_label}]" if model_name
             else f"Running: {proc_label}" if proc_label
             else "Idle"
         )
 
+        # Assign only when the text changed — a menu item .title write is a
+        # redraw, and most polls leave several rows unchanged.
+        _set_title(self._spark_item, f"Trend:   {_sparkline(self._history)}")
+        _set_title(self._free_item,  f"Free:    {free_pct}%  ({mp_free_gb:.1f} / {TOTAL_GB:.0f} GB)")
+        _set_title(self._used_item,  f"In use:  {used_gb:.1f} / {TOTAL_GB:.0f} GB")
+        _set_title(self._wired_item,
+            f"Wired:   {wired:.1f} GB  (model weights)" if wired else "Wired:   —")
+        _set_title(self._swap_item,
+            f"Swap:    {swap.used / (1024**3):.1f} GB used" if swap.used > 0 else "Swap:    none")
+        _set_title(self._fits_item,
+            f"4-bit:   {_fits_row(mp_free_gb)}   ({mp_free_gb:.1f} GB free)")
+        _set_title(self._model_item, running)
+
     @rumps.timer(0.15)
     def animate(self, _):
-        """Fast tick — handles title bar flash and loading spinner."""
+        """Fast tick — handles title bar flash and loading spinner.
+
+        Only rewrites the title when it actually changes: when idle (no flash,
+        no spinner) the title is static, so this tick becomes a no-op instead of
+        forcing a menubar redraw ~7×/s.
+        """
         emoji  = self._cur_emoji
         free_g = self._cur_free_gb
         pct    = self._cur_pct
 
         if self._flash_count > 0:
             show = self._flash_count % 2 == 0
-            self.title = f"RAM {emoji} {free_g:.1f}G · {pct}% free" if show else f"RAM     {free_g:.1f}G · {pct}% free"
+            title = f"RAM {emoji} {free_g:.1f}G · {pct}% free" if show else f"RAM     {free_g:.1f}G · {pct}% free"
             self._flash_count -= 1
         elif self._cur_loading:
             frame = _SPINNER[self._spinner_idx % len(_SPINNER)]
-            self.title = f"RAM {emoji}{frame} {free_g:.1f}G · {pct}% free"
+            title = f"RAM {emoji}{frame} {free_g:.1f}G · {pct}% free"
             self._spinner_idx += 1
         else:
-            self.title = f"RAM {emoji} {free_g:.1f}G · {pct}% free"
+            title = f"RAM {emoji} {free_g:.1f}G · {pct}% free"
+
+        if title != self._last_title:
+            self.title = title
+            self._last_title = title
 
     def _quit(self, _):
         rumps.quit_application()
 
 
 if __name__ == "__main__":
-    RamCatApp().run()
+    parser = argparse.ArgumentParser(
+        description="RAM Cat — RAM-pressure companion for local LLMs. "
+                    "Runs in the terminal by default; pass --menubar for the menubar app.",
+    )
+    parser.add_argument(
+        "--menubar", action="store_true",
+        help="Launch the macOS menubar app. Without this, RAM Cat runs in the terminal.",
+    )
+    parser.add_argument(
+        "--cli", action="store_true",
+        help="Terminal watch view (this is the default when --menubar is not given).",
+    )
+    parser.add_argument(
+        "--once", action="store_true",
+        help="Print a single snapshot and exit (implies --cli).",
+    )
+    parser.add_argument(
+        "--interval", type=float, default=3.0,
+        help="Seconds between refreshes in --cli mode (default: 3).",
+    )
+    parser.add_argument(
+        "--oneline", action="store_true",
+        help="Compact single-line output (for tmux, Sketchybar, etc.). "
+             "Prints once unless combined with --cli.",
+    )
+    parser.add_argument(
+        "--no-color", action="store_true",
+        help="Disable ANSI colors (colors are on by default in a terminal).",
+    )
+    args = parser.parse_args()
+
+    if args.menubar:
+        RamCatApp().run()
+    else:
+        once  = args.once or (args.oneline and not args.cli)
+        color = False if args.no_color else None
+        run_cli(once=once, interval=args.interval, oneline=args.oneline, color=color)

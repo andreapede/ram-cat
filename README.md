@@ -62,10 +62,42 @@ cd ram-cat
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python app.py
+python app.py            # terminal watch view
+python app.py --menubar  # macOS menubar app
 ```
 
 Requires macOS (Apple Silicon recommended). Uses the `memory_pressure` CLI which ships with macOS — no sudo, no extra dependencies.
+
+By default RAM Cat runs **in the terminal** — the menubar app is opt-in via `--menubar`, since on a busy menu bar (or behind the notch on newer MacBook Pros) the title can get clipped off-screen.
+
+---
+
+## Terminal mode
+
+Same numbers, same fits row, no menu bar needed:
+
+```bash
+python app.py                # top-style watch view, refreshes every 3s (default)
+python app.py --interval 1   # faster refresh
+python app.py --once         # print one snapshot and exit
+python app.py --oneline      # compact single line — for status bars
+```
+
+The mood is colored (green → cyan → yellow → magenta → red as RAM tightens), and the fits row marks ✓ green / ✗ red. Colors turn off automatically when the output is piped (not a terminal); force them off with `--no-color`.
+
+```
+RAM 😴 25.3G · 79% free   (Sleepy — nothing loaded)
+
+Trend:   ▁▁▂▄▅▆▇▇██
+Free:    79%  (25.3 / 32 GB)
+In use:  6.7 / 32 GB
+Wired:   2.8 GB  (model weights)
+Swap:    none
+4-bit:   ✓1B  ✓3B  ✓7B  ✓8B  ✓13B  ✓14B  ✓27B  ✓32B  ✗70B  ✗72B   (25.3 GB free)
+Running: ollama
+```
+
+`--oneline` (and `--once`) are handy for status bars — e.g. a tmux `status-right` or a Sketchybar item that shells out to `python app.py --oneline`. Add `--cli` to `--oneline` to keep a single line updating in place instead. Press `Ctrl-C` to leave any watch view.
 
 ---
 
